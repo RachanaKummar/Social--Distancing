@@ -1,0 +1,181 @@
+#importing libraries
+import cv2
+import datetime
+#A series of convenience functions to make basic image processing functions such as translation, rotation, resizing, skeletonization, displaying Matplotlib images, sorting contours, detecting edges, and much more easier with OpenCV 
+import imutils
+import numpy as np
+#from pyimagesearch.centroidtracker import CentroidTracker
+from centroidtracker import CentroidTracker  #object tracking algorithm
+from itertools import combinations #0,1,2 - 01,02,10,12,20,21
+import math
+
+#deep neural network(dnn) module with Caffe models for face detection
+protopath = "MobileNetSSD_deploy.prototxt"  #The .prototxt file(s) which define the model architecture (i.e., the layers themselves)
+modelpath = "MobileNetSSD_deploy.caffemodel" #The .caffemodel file which contains the weights for the actual layers
+detector = cv2.dnn.readNetFromCaffe(prototxt=protopath, caffeModel=modelpath)
+
+CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
+           "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
+           "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
+           "sofa", "train", "tvmonitor"]
+
+tracker = CentroidTracker(maxDisappeared=60, maxDistance=70)
+#maxDisappeared : The number of consecutive frames an object is allowed to be marked as “lost/disappeared” until we deregister the object.
+#maxDistance: store the maximum distance between centroids to associate an object -- if the distance is larger than this maximum distance we'll start to mark the object as "disappeared"
+
+
+#Non-Maximum Suppression for Object Detection in Python
+#This will return the largest box for a group of overlapping boxes whose area overlap by the percentage that can be indicated in the function.
+def non_max_suppression_fast(boxes, overlapThresh):
+    try:
+        if len(boxes) == 0:
+            return [] # if there are no boxes, return an empty list
+
+        if boxes.dtype.kind == "i":
+            boxes = boxes.astype("float")
+
+        pick = []  # initialize the list of picked indexes
+        
+        # getting the coordinates of the bounding boxes
+        x1 = boxes[:, 0]
+        y1 = boxes[:, 1]
+        x2 = boxes[:, 2]
+        y2 = boxes[:, 3]
+        
+        # compute the area of the bounding boxes and sort the bounding
+        # boxes by the bottom-right y-coordinate of the bounding box
+        #we sort according to the bottom-right corner as need to compute the overlap ratio of other bounding boxes later .
+        area = (x2 - x1 + 1) * (y2 - y1 + 1)
+        idxs = np.argsort(area)
+        
+        
+
+       #  looping while some indexes still remain in the indexes
+
+        while len(idxs) > 0:
+        # grab the last index in the indexes list, add the index
+        # value to the list of picked indexes, then initialize
+        # the suppression list (i.e. indexes that will be deleted)
+        # using the last index
+            last = len(idxs) - 1
+            i = idxs[last]
+            pick.append(i)
+            
+        # find the largest (x, y) coordinates for the start of
+        # the bounding box and the smallest (x, y) coordinates
+        # for the end of the bounding box
+            xx1 = np.maximum(x1[i], x1[idxs[:last]])
+            yy1 = np.maximum(y1[i], y1[idxs[:last]])
+            xx2 = np.minimum(x2[i], x2[idxs[:last]])
+            yy2 = np.minimum(y2[i], y2[idxs[:last]])
+            
+            # compute the width and height of the bounding box
+            w = np.maximum(0, xx2 - xx1 + 1)
+            h = np.maximum(0, yy2 - yy1 + 1)
+
+            # compute the ratio of overlap between the computed
+            # bounding box and the bounding box in the area list
+            overlap = (w * h) / area[idxs[:last]]
+
+            idxs = np.delete(idxs, np.concatenate(([last],
+                                                   np.where(overlap > overlapThresh)[0])))
+
+        return boxes[pick].astype("int")
+    except Exception as e:
+        print("Exception occurred in non_max_suppression : {}".format(e))
+def main():
+    cap = cv2.VideoCapture(r'social-distance.mp4')
+    #frames per second
+    fps_start_time = datetime.datetime.now()
+    fps = 0
+    total_frames = 0
+
+    while True:
+        ret, frame = cap.read()
+        frame = imutils.resize(frame, width=600)
+        total_frames = total_frames + 1
+
+        (H, W) = frame.shape[:2] #2- only height and weight
+        
+        #blob  which is our input image after mean subtraction, normalizing, and channel swapping.
+        blob = cv2.dnn.blobFromImage(frame, 0.007843, (W, H), 127.5)#mean = 127.5,scalefactor=0.007843
+        #blob = cv2.dnn.blobFromImages(frame, 1.0, (H,W), (104, 117, 123))
+
+        detector.setInput(blob)
+        person_detections = detector.forward() #pass the blob
+        rects = []
+        for i in np.arange(0, person_detections.shape[2]): #returns an ndarray object containing evenly spaced values within a defined interval.
+            confidence = person_detections[0, 0, i, 2] #extracts the confidence of the detection using the index.
+            if confidence > 0.5: #threshold4
+                idx = int(person_detections[0, 0, i, 1])
+
+                if CLASSES[idx] != "person":
+                    continue
+                # compute the (x, y)-coordinates of the bounding box for the face and extract the face ROI
+                person_box = person_detections[0, 0, i, 3:7] * np.array([W, H, W, H])
+                ## extract the bounding box and centroid coordinates
+                (startX, startY, endX, endY) = person_box.astype("int")
+                rects.append(person_box)
+
+        boundingboxes = np.array(rects) #getting the coordinate values of the bounding box
+        boundingboxes = boundingboxes.astype(int) #converting the values into int
+        rects = non_max_suppression_fast(boundingboxes, 0.3) #overlapthreshold=0.3
+        centroid_dict = dict()
+        objects = tracker.update(rects)
+        for (objectId, bbox) in objects.items():
+            x1, y1, x2, y2 = bbox
+            x1 = int(x1)
+            y1 = int(y1)
+            x2 = int(x2)
+            y2 = int(y2)
+            cX = int((x1 + x2) / 2.0) #centroid
+            cY = int((y1 + y2) / 2.0)
+
+
+            centroid_dict[objectId] = (cX, cY, x1, y1, x2, y2)
+
+            #text = "ID: {}".format(objectId)
+            #cv2.putText(frame, text, (x1, y1-5), cv2.FONT_HERSHEY_COMPLEX_SMALL, 1, (0, 0, 255), 1)
+
+        red_zone_list = []
+        for (id1, p1), (id2, p2) in combinations(centroid_dict.items(), 2):
+            
+            #It is the same distance no matter which one is the origin and which one is the destination. 
+            #This will allow calculating the distance only once per pair
+            dx, dy = p1[0] - p2[0], p1[1] - p2[1]
+                     #centroid of first person - centroid of the second person.
+            distance = math.sqrt(dx * dx + dy * dy) #calculating distance.
+            if distance < 75.0:
+                if id1 not in red_zone_list:
+                    red_zone_list.append(id1)
+                if id2 not in red_zone_list:
+                    red_zone_list.append(id2)
+
+        for id, box in centroid_dict.items():
+            if id in red_zone_list:
+                cv2.rectangle(frame, (box[2], box[3]), (box[4], box[5]), (0, 0, 255), 2)
+            else:
+                cv2.rectangle(frame, (box[2], box[3]), (box[4], box[5]), (0, 255, 0), 2)
+
+
+        fps_end_time = datetime.datetime.now()
+        time_diff = fps_end_time - fps_start_time
+        if time_diff.seconds == 0:
+            fps = 0.0
+        else:
+            fps = (total_frames / time_diff.seconds)
+
+        fps_text = "FPS: {:.2f}".format(fps)
+
+        cv2.putText(frame, fps_text, (5, 30), cv2.FONT_HERSHEY_COMPLEX_SMALL, 1, (0, 0, 255), 1)
+        
+
+        cv2.imshow("Application", frame)
+        key = cv2.waitKey(1)
+        if key == ord('q'):
+            break
+
+    cv2.destroyAllWindows()
+
+
+main()
